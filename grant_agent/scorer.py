@@ -1,125 +1,91 @@
 """
-Claude API scorer. Sends all grants in one batched prompt, returns ScoredGrant list.
-Uses claude-sonnet-4-6 with prompt caching on the system prompt.
+Keyword-based heuristic scorer. No API key or external service required.
+
+Scoring rubric (1-10):
+  +3  AI / machine learning / artificial intelligence keyword
+  +2  Education / literacy / training / workforce
+  +2  Equity / underserved / low-income / community / minority / BIPOC
+  +1  Chicago / Illinois / Cook County geographic match
+  +1  Nonprofit / community org / small business eligible
+  +1  STEM / technology / digital literacy
+  Clamp result to 1-10 range.
 """
-import json
-import sys
-from typing import Optional
-
-import anthropic
-
-from .config import ANTHROPIC_API_KEY, CLAUDE_MODEL, MISSION
+import re
 from .models import Grant, ScoredGrant
 
-_SYSTEM = f"""You are a grant-fit analyst for a nonprofit technology organization.
+# (pattern, points, label)
+_RULES: list[tuple[str, int, str]] = [
+    (r"\b(artificial intelligence|machine learning|AI\b|deep learning|NLP|LLM)\b", 3, "AI/ML focus"),
+    (r"\b(education|literacy|learning|curriculum|training|workforce development)\b", 2, "education focus"),
+    (r"\b(underserved|equity|low.income|community|minority|BIPOC|marginalized|disadvantaged)\b", 2, "equity focus"),
+    (r"\b(Chicago|Illinois|Cook County|Midwest)\b", 1, "geographic match"),
+    (r"\b(nonprofit|non.profit|501.c|small business|SBIR|SBDC|community org)\b", 1, "nonprofit/SMB eligible"),
+    (r"\b(STEM|technology|digital|innovation|tech)\b", 1, "STEM/tech alignment"),
+]
 
-Organization mission: {MISSION}
+_MISSION_KEYWORDS = [
+    "AI education", "community literacy", "underserved", "Chicago",
+    "south suburban", "Cook County", "workforce", "digital equity",
+]
 
-For each grant, you will:
-1. Score fit 1–10 (10 = perfect mission alignment + eligibility match)
-   Scoring rubric:
-   - 9-10: Direct AI/tech education + underserved/equity focus + Chicago/Illinois eligible
-   - 7-8:  AI or education focus + equity/community angle, geography flexible
-   - 5-6:  Partial overlap (e.g. workforce training OR community tech, not both)
-   - 3-4:  Tangential connection, worth monitoring
-   - 1-2:  Misaligned (wrong sector, geography locked out, or nonprofit ineligible)
-2. Write one paragraph (3-5 sentences) explaining exactly WHY the org qualifies,
-   citing specific mission elements that map to grant criteria.
 
-Return ONLY a JSON array. Each element:
-{{
-  "index": <int>,
-  "fit_score": <int 1-10>,
-  "qualification_summary": "<paragraph>"
-}}
-"""
+def _score_text(text: str) -> tuple[int, list[str]]:
+    text_lower = text.lower()
+    total = 0
+    matched_labels: list[str] = []
+    for pattern, pts, label in _RULES:
+        if re.search(pattern, text, re.IGNORECASE):
+            total += pts
+            matched_labels.append(label)
+    return max(1, min(10, total)), matched_labels
+
+
+def _build_summary(grant: Grant, score: int, matched: list[str]) -> str:
+    source_sentence = (
+        f"This grant from {grant.source} aligns with The Plug AI's mission "
+        f"based on the following criteria: {', '.join(matched) if matched else 'general community focus'}."
+    )
+
+    if score >= 8:
+        strength = "strong"
+        extra = (
+            "The grant's emphasis on AI, education, and underserved communities directly mirrors "
+            "The Plug AI's work delivering AI literacy programs to south suburban Cook County residents."
+        )
+    elif score >= 6:
+        strength = "moderate"
+        extra = (
+            "The Plug AI's community-focused AI education platform demonstrates meaningful overlap "
+            "with this funder's priorities, particularly around workforce development and digital equity."
+        )
+    elif score >= 4:
+        strength = "partial"
+        extra = (
+            "While not a perfect fit, The Plug AI could frame its work around the workforce "
+            "and community technology elements of this opportunity."
+        )
+    else:
+        strength = "limited"
+        extra = (
+            "This grant has limited direct alignment with The Plug AI's current program model; "
+            "significant proposal tailoring would be required."
+        )
+
+    award_note = (
+        f"The award range of {grant.award_range_str()} would support program expansion. "
+        if grant.award_max else ""
+    )
+
+    return f"{source_sentence} The fit is {strength}. {extra} {award_note}".strip()
 
 
 def score_grants(grants: list[Grant]) -> list[ScoredGrant]:
-    if not grants:
-        return []
-
-    if not ANTHROPIC_API_KEY:
-        print("[scorer] ANTHROPIC_API_KEY not set — using placeholder scores", file=sys.stderr)
-        return _placeholder_scores(grants)
-
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-
-    # Build the user message listing all grants
-    lines = []
-    for i, g in enumerate(grants):
-        lines.append(
-            f"[{i}] SOURCE: {g.source}\n"
-            f"    TITLE: {g.title}\n"
-            f"    URL: {g.url}\n"
-            f"    DEADLINE: {g.deadline or 'Unknown'}\n"
-            f"    AWARD: {g.award_range_str()}\n"
-            f"    DESCRIPTION: {g.description[:500]}\n"
-        )
-    user_content = "Score each grant below:\n\n" + "\n".join(lines)
-
-    try:
-        response = client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=4096,
-            system=[
-                {
-                    "type": "text",
-                    "text": _SYSTEM,
-                    "cache_control": {"type": "ephemeral"},  # cache system prompt
-                }
-            ],
-            messages=[{"role": "user", "content": user_content}],
-        )
-        raw = response.content[0].text.strip()
-
-        # Strip markdown fences if present
-        if raw.startswith("```"):
-            raw = re.sub(r"^```[a-z]*\n?", "", raw)
-            raw = re.sub(r"\n?```$", "", raw)
-
-        scored_data = json.loads(raw)
-    except Exception as exc:
-        print(f"[scorer] Claude API call failed: {exc}", file=sys.stderr)
-        return _placeholder_scores(grants)
-
     results: list[ScoredGrant] = []
-    score_map: dict[int, dict] = {item["index"]: item for item in scored_data}
-    for i, g in enumerate(grants):
-        item = score_map.get(i, {})
-        results.append(
-            ScoredGrant(
-                grant=g,
-                fit_score=int(item.get("fit_score", 5)),
-                qualification_summary=item.get(
-                    "qualification_summary",
-                    "Score unavailable — manual review recommended.",
-                ),
-            )
-        )
+    for g in grants:
+        combined = f"{g.title} {g.description} {g.source}"
+        score, matched = _score_text(combined)
+        summary = _build_summary(g, score, matched)
+        results.append(ScoredGrant(grant=g, fit_score=score, qualification_summary=summary))
 
     results.sort(key=lambda s: s.fit_score, reverse=True)
     return results
-
-
-def _placeholder_scores(grants: list[Grant]) -> list[ScoredGrant]:
-    """Fallback when API key is absent — assigns neutral scores so report still renders."""
-    import random
-    results = [
-        ScoredGrant(
-            grant=g,
-            fit_score=5,
-            qualification_summary=(
-                "Automated scoring unavailable (no API key). "
-                "Manual review required. "
-                f"Grant from {g.source} — see {g.url}"
-            ),
-        )
-        for g in grants
-    ]
-    results.sort(key=lambda s: s.grant.deadline or __import__("datetime").date.max)
-    return results
-
-
-# Fix missing import in score_grants
-import re

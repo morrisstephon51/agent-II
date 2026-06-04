@@ -1,21 +1,16 @@
 import os
-from dataclasses import dataclass, field
-from typing import List
-
 
 MISSION = (
     "AI education and community literacy platform targeting underserved communities "
     "in Chicago south suburban Cook County"
 )
 
-# Granted MCP search queries per target source
 GRANTED_QUERIES = [
     "NSF SBIR artificial intelligence education",
     "Department of Labor WIOA workforce technology training",
     "Woods Fund Chicago community technology",
 ]
 
-# Pages to scrape directly (Firecrawl preferred, httpx fallback)
 SCRAPE_TARGETS = [
     {
         "source": "Google.org AI Opportunity Fund",
@@ -48,9 +43,10 @@ ALERT_DAYS = 30
 MAX_GRANT_AGE_DAYS = 90
 SCORE_BOLD_THRESHOLD = 7
 
-CLAUDE_MODEL = "claude-sonnet-4-6"
-
+# Email alert via free Gmail SMTP (optional)
+# Set SMTP_USER + SMTP_PASS (Gmail app password) + ALERT_EMAIL to enable
 ALERT_EMAIL = os.getenv("ALERT_EMAIL", "")
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "")
-COMPOSIO_API_KEY = os.getenv("COMPOSIO_API_KEY", "")
+SMTP_USER = os.getenv("SMTP_USER", "")      # your Gmail address
+SMTP_PASS = os.getenv("SMTP_PASS", "")      # Gmail app password (16-char)
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))

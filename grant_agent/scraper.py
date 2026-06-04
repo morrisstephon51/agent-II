@@ -1,24 +1,16 @@
 """
-Scraper layer: Granted MCP (via subprocess/API), Firecrawl, httpx fallback.
-Each adapter returns list[Grant]. main fetch_all() deduplicates and age-filters.
+Scraper layer: Granted public API, NSF SBIR JSON API, httpx + BeautifulSoup4.
+No paid services required.
 """
-import json
-import os
 import re
-import subprocess
 import sys
 from datetime import date, datetime
 from typing import Optional
-from urllib.parse import urlencode
 
 import httpx
+from bs4 import BeautifulSoup
 
-from .config import (
-    FIRECRAWL_API_KEY,
-    GRANTED_QUERIES,
-    MAX_GRANT_AGE_DAYS,
-    SCRAPE_TARGETS,
-)
+from .config import GRANTED_QUERIES, MAX_GRANT_AGE_DAYS, SCRAPE_TARGETS
 from .models import Grant
 
 _HEADERS = {
@@ -27,17 +19,8 @@ _HEADERS = {
     )
 }
 
-
-# ---------------------------------------------------------------------------
-# Date parsing helpers
-# ---------------------------------------------------------------------------
-
 _DATE_PATTERNS = [
-    "%Y-%m-%d",
-    "%m/%d/%Y",
-    "%B %d, %Y",
-    "%b %d, %Y",
-    "%d %B %Y",
+    "%Y-%m-%d", "%m/%d/%Y", "%B %d, %Y", "%b %d, %Y", "%d %B %Y",
 ]
 
 
@@ -50,7 +33,6 @@ def _parse_date(raw: str) -> Optional[date]:
             return datetime.strptime(raw, fmt).date()
         except ValueError:
             pass
-    # try ISO partial
     m = re.search(r"(\d{4}-\d{2}-\d{2})", raw)
     if m:
         try:
@@ -60,7 +42,7 @@ def _parse_date(raw: str) -> Optional[date]:
     return None
 
 
-def _parse_amount(raw: str) -> Optional[int]:
+def _parse_amount(raw) -> Optional[int]:
     if not raw:
         return None
     digits = re.sub(r"[^\d]", "", str(raw))
@@ -68,9 +50,7 @@ def _parse_amount(raw: str) -> Optional[int]:
 
 
 # ---------------------------------------------------------------------------
-# Granted MCP adapter (calls the mcp__Granted__search_grants tool via Python)
-# We call the Granted REST API directly since MCP tools aren't accessible from
-# within the agent's own Python subprocess.
+# Granted public API (free, no key required)
 # ---------------------------------------------------------------------------
 
 GRANTED_API_BASE = "https://api.granted.fyi/v1"
@@ -79,10 +59,9 @@ GRANTED_API_BASE = "https://api.granted.fyi/v1"
 def _fetch_granted_query(query: str) -> list[Grant]:
     grants: list[Grant] = []
     try:
-        params = {"q": query, "status": "open", "limit": 20}
         r = httpx.get(
             f"{GRANTED_API_BASE}/grants/search",
-            params=params,
+            params={"q": query, "status": "open", "limit": 20},
             headers=_HEADERS,
             timeout=15,
         )
@@ -99,7 +78,7 @@ def _fetch_granted_query(query: str) -> list[Grant]:
                     title=item.get("title") or item.get("name", "Unknown"),
                     url=item.get("url") or item.get("link") or item.get("source_url", ""),
                     source=item.get("funder") or item.get("agency") or query,
-                    description=item.get("description") or item.get("summary", "")[:800],
+                    description=(item.get("description") or item.get("summary", ""))[:800],
                     deadline=deadline,
                     award_min=_parse_amount(item.get("award_min") or item.get("min_amount", "")),
                     award_max=_parse_amount(
@@ -120,7 +99,7 @@ def fetch_granted() -> list[Grant]:
 
 
 # ---------------------------------------------------------------------------
-# NSF SBIR API adapter
+# NSF SBIR public JSON API (free)
 # ---------------------------------------------------------------------------
 
 NSF_SBIR_API = "https://api.sbir.gov/public/api/solicitations"
@@ -129,15 +108,14 @@ NSF_SBIR_API = "https://api.sbir.gov/public/api/solicitations"
 def fetch_nsf_sbir() -> list[Grant]:
     grants: list[Grant] = []
     try:
-        params = {"keyword": "artificial intelligence education", "open": "true", "rows": 20}
-        r = httpx.get(NSF_SBIR_API, params=params, headers=_HEADERS, timeout=15)
+        r = httpx.get(
+            NSF_SBIR_API,
+            params={"keyword": "artificial intelligence education", "open": "true", "rows": 20},
+            headers=_HEADERS,
+            timeout=15,
+        )
         if r.status_code != 200:
-            # Try alternate endpoint
-            r = httpx.get(
-                "https://www.sbir.gov/api/solicitations/open",
-                headers=_HEADERS,
-                timeout=15,
-            )
+            r = httpx.get("https://www.sbir.gov/api/solicitations/open", headers=_HEADERS, timeout=15)
         if r.status_code != 200:
             return grants
         data = r.json()
@@ -160,28 +138,10 @@ def fetch_nsf_sbir() -> list[Grant]:
 
 
 # ---------------------------------------------------------------------------
-# Firecrawl + httpx scraper for non-API sources
+# httpx + BeautifulSoup4 scraper (free, no API key)
 # ---------------------------------------------------------------------------
 
-def _firecrawl_scrape(url: str) -> Optional[str]:
-    if not FIRECRAWL_API_KEY:
-        return None
-    try:
-        r = httpx.post(
-            "https://api.firecrawl.dev/v1/scrape",
-            headers={"Authorization": f"Bearer {FIRECRAWL_API_KEY}", "Content-Type": "application/json"},
-            json={"url": url, "formats": ["markdown"], "onlyMainContent": True},
-            timeout=30,
-        )
-        if r.status_code == 200:
-            data = r.json()
-            return data.get("data", {}).get("markdown") or data.get("markdown", "")
-    except Exception as exc:
-        print(f"[scraper] Firecrawl failed for {url}: {exc}", file=sys.stderr)
-    return None
-
-
-def _httpx_scrape(url: str) -> str:
+def _html_scrape(url: str) -> str:
     try:
         r = httpx.get(url, headers=_HEADERS, timeout=20, follow_redirects=True)
         return r.text
@@ -190,77 +150,66 @@ def _httpx_scrape(url: str) -> str:
         return ""
 
 
-def _extract_grants_from_text(text: str, source: str, source_url: str) -> list[Grant]:
-    """
-    Lightweight heuristic extractor. Returns 0-3 grants from scraped markdown/HTML.
-    The Claude scorer will do deeper analysis; this just surfaces candidates.
-    """
-    grants: list[Grant] = []
-    if not text:
-        return grants
+def _extract_grants_from_html(html: str, source: str, source_url: str) -> list[Grant]:
+    if not html:
+        return []
 
-    # Look for deadline mentions
+    soup = BeautifulSoup(html, "html.parser")
+
+    # Remove nav/footer/script noise
+    for tag in soup(["script", "style", "nav", "footer", "header"]):
+        tag.decompose()
+
+    text = soup.get_text(separator=" ", strip=True)
+    text = re.sub(r"\s+", " ", text)
+
+    # Deadline extraction
     deadline_match = re.search(
-        r"(?:deadline|due|close[sd]?|apply by)[:\s]+([A-Za-z]+\s+\d{1,2},?\s+\d{4}|\d{4}-\d{2}-\d{2})",
-        text,
-        re.IGNORECASE,
+        r"(?:deadline|due|close[sd]?|apply by)[:\s]+([A-Za-z]+\s+\d{1,2},?\s+\d{4}|\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{4})",
+        text, re.IGNORECASE,
     )
     deadline = _parse_date(deadline_match.group(1)) if deadline_match else None
 
-    # Look for amount mentions
-    amount_match = re.search(
-        r"\$\s*([\d,]+(?:\.\d+)?)\s*(?:million|M|thousand|K)?",
-        text,
-        re.IGNORECASE,
-    )
+    # Amount extraction
     award_max: Optional[int] = None
+    amount_match = re.search(
+        r"\$([\d,]+(?:\.\d+)?)\s*(million|M\b|thousand|K\b)?",
+        text, re.IGNORECASE,
+    )
     if amount_match:
         raw_val = amount_match.group(1).replace(",", "")
-        full_match = amount_match.group(0).lower()
-        multiplier = 1_000_000 if "million" in full_match or " m" in full_match else (
-            1_000 if "thousand" in full_match or " k" in full_match else 1
-        )
+        suffix = (amount_match.group(2) or "").lower()
+        multiplier = 1_000_000 if suffix in ("million", "m") else (1_000 if suffix in ("thousand", "k") else 1)
         try:
             award_max = int(float(raw_val) * multiplier)
         except ValueError:
             pass
 
-    # Use first 600 chars as description
-    description = re.sub(r"\s+", " ", text[:600]).strip()
+    description = text[:600].strip()
 
-    grants.append(
-        Grant(
-            title=source,
-            url=source_url,
-            source=source,
-            description=description,
-            deadline=deadline,
-            award_max=award_max,
-        )
-    )
-    return grants
+    return [Grant(
+        title=source,
+        url=source_url,
+        source=source,
+        description=description,
+        deadline=deadline,
+        award_max=award_max,
+    )]
 
 
 def fetch_scraped_sources() -> list[Grant]:
     grants: list[Grant] = []
     for target in SCRAPE_TARGETS:
+        if target.get("is_api"):
+            continue
         source = target["source"]
         url = target["url"]
-
-        if target.get("is_api"):
-            continue  # handled by dedicated adapters
-
-        text = _firecrawl_scrape(url)
-        if not text:
-            fallback = target.get("fallback_url", url)
-            text = _httpx_scrape(fallback)
-            if not text:
-                text = _httpx_scrape(url)
-
-        extracted = _extract_grants_from_text(text, source, url)
+        html = _html_scrape(url)
+        if not html:
+            html = _html_scrape(target.get("fallback_url", url))
+        extracted = _extract_grants_from_html(html, source, url)
         grants.extend(extracted)
         print(f"[scraper] {source}: {len(extracted)} candidate(s) found")
-
     return grants
 
 
@@ -278,7 +227,6 @@ def fetch_all() -> list[Grant]:
     print("[scraper] Scraping direct sources...")
     all_grants.extend(fetch_scraped_sources())
 
-    # Deduplicate by URL
     seen: set[str] = set()
     unique: list[Grant] = []
     for g in all_grants:
@@ -287,7 +235,6 @@ def fetch_all() -> list[Grant]:
             seen.add(key)
             unique.append(g)
 
-    # Drop grants older than 90 days
     fresh = [g for g in unique if g.is_recent(MAX_GRANT_AGE_DAYS)]
     print(f"[scraper] {len(fresh)} fresh grants after dedup + age filter (from {len(all_grants)} raw)")
     return fresh
