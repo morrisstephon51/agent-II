@@ -43,6 +43,9 @@ ALERT_DAYS = 30
 MAX_GRANT_AGE_DAYS = 90
 SCORE_BOLD_THRESHOLD = 7
 
+CLAUDE_MODEL = "claude-sonnet-4-6"
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+
 # Composio email alerts
 ALERT_EMAIL = os.getenv("ALERT_EMAIL", "")
 COMPOSIO_API_KEY = os.getenv("COMPOSIO_API_KEY", "")
