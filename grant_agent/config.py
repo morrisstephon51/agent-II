@@ -43,10 +43,6 @@ ALERT_DAYS = 30
 MAX_GRANT_AGE_DAYS = 90
 SCORE_BOLD_THRESHOLD = 7
 
-# Email alert via free Gmail SMTP (optional)
-# Set SMTP_USER + SMTP_PASS (Gmail app password) + ALERT_EMAIL to enable
+# Composio email alerts
 ALERT_EMAIL = os.getenv("ALERT_EMAIL", "")
-SMTP_USER = os.getenv("SMTP_USER", "")      # your Gmail address
-SMTP_PASS = os.getenv("SMTP_PASS", "")      # Gmail app password (16-char)
-SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+COMPOSIO_API_KEY = os.getenv("COMPOSIO_API_KEY", "")

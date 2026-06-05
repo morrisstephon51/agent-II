@@ -1,34 +1,45 @@
 """
-Alert layer: stdout ⚠️ block + free Gmail SMTP email via stdlib smtplib.
-No paid services required. Set SMTP_USER, SMTP_PASS, ALERT_EMAIL to enable email.
+Alert layer: stdout ⚠️ block + Composio Gmail email for near-deadline grants.
+Email is only sent if ALERT_EMAIL and COMPOSIO_API_KEY are set.
 """
-import smtplib
 import sys
 from datetime import date
-from email.mime.text import MIMEText
 from pathlib import Path
 
-from .config import ALERT_DAYS, ALERT_EMAIL, SMTP_HOST, SMTP_PASS, SMTP_PORT, SMTP_USER
+import httpx
+
+from .config import ALERT_DAYS, ALERT_EMAIL, COMPOSIO_API_KEY
 from .models import ScoredGrant
 
 
-def _send_email(subject: str, body: str) -> bool:
-    if not (SMTP_USER and SMTP_PASS and ALERT_EMAIL):
+def _send_composio_email(subject: str, body: str) -> bool:
+    if not COMPOSIO_API_KEY or not ALERT_EMAIL:
         return False
     try:
-        msg = MIMEText(body)
-        msg["Subject"] = subject
-        msg["From"] = SMTP_USER
-        msg["To"] = ALERT_EMAIL
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as smtp:
-            smtp.ehlo()
-            smtp.starttls()
-            smtp.login(SMTP_USER, SMTP_PASS)
-            smtp.sendmail(SMTP_USER, [ALERT_EMAIL], msg.as_string())
-        return True
+        r = httpx.post(
+            "https://backend.composio.dev/api/v2/actions/GMAIL_SEND_EMAIL/execute",
+            headers={
+                "X-API-Key": COMPOSIO_API_KEY,
+                "Content-Type": "application/json",
+            },
+            json={
+                "input": {
+                    "recipient_email": ALERT_EMAIL,
+                    "subject": subject,
+                    "body": body,
+                    "is_html": False,
+                }
+            },
+            timeout=20,
+        )
+        if r.status_code in (200, 201):
+            data = r.json()
+            return data.get("successfull") or data.get("success") or data.get("executed", False)
+        else:
+            print(f"[alerts] Composio email failed: {r.status_code} {r.text[:200]}", file=sys.stderr)
     except Exception as exc:
-        print(f"[alerts] Email failed: {exc}", file=sys.stderr)
-        return False
+        print(f"[alerts] Composio email error: {exc}", file=sys.stderr)
+    return False
 
 
 def check_and_alert(scored_grants: list[ScoredGrant], report_path: Path) -> None:
@@ -52,15 +63,16 @@ def check_and_alert(scored_grants: list[ScoredGrant], report_path: Path) -> None
         )
     print("=" * 60 + "\n")
 
-    # ── SMTP email ──────────────────────────────────────────────────────────
+    # ── Composio email ──────────────────────────────────────────────────────
     if not ALERT_EMAIL:
         print("[alerts] ALERT_EMAIL not set — skipping email notification.")
         return
 
     subject = f"⚠️ Grant Deadline Alert — {len(urgent)} grant(s) due within 30 days [{date.today()}]"
+
     body_lines = [
         f"Grant Deadline Alert — {date.today()}",
-        f"{len(urgent)} grant(s) have deadlines within the next 30 days:\n",
+        f"The following {len(urgent)} grant(s) have deadlines within the next 30 days:\n",
     ]
     for sg in sorted(urgent, key=lambda s: s.grant.deadline):
         days_left = sg.grant.days_until_deadline()
@@ -76,8 +88,8 @@ def check_and_alert(scored_grants: list[ScoredGrant], report_path: Path) -> None
         ]
     body_lines.append(f"\nFull report: {report_path}")
 
-    sent = _send_email(subject, "\n".join(body_lines))
+    sent = _send_composio_email(subject, "\n".join(body_lines))
     if sent:
-        print(f"[alerts] Email sent to {ALERT_EMAIL}.")
+        print(f"[alerts] Email sent to {ALERT_EMAIL} via Composio.")
     else:
-        print("[alerts] Email not sent (set SMTP_USER, SMTP_PASS, ALERT_EMAIL to enable).")
+        print("[alerts] Email not sent (check COMPOSIO_API_KEY / ALERT_EMAIL).")
