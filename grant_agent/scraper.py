@@ -142,12 +142,26 @@ def fetch_nsf_sbir() -> list[Grant]:
 # ---------------------------------------------------------------------------
 
 def _html_scrape(url: str) -> str:
+    """Fetch page HTML, or "" if the source did not serve content.
+
+    Returns "" on a transport error *and* on any non-200 status. The status
+    check is what makes ``fallback_url`` reachable: servers answer 403/404 with
+    a full HTML error page, so a body-length check alone can never tell a dead
+    source from a live one. Mirrors the guards in ``_fetch_granted_query`` and
+    ``fetch_nsf_sbir``.
+    """
     try:
         r = httpx.get(url, headers=_HEADERS, timeout=20, follow_redirects=True)
-        return r.text
     except Exception as exc:
         print(f"[scraper] httpx failed for {url}: {exc}", file=sys.stderr)
         return ""
+    if r.status_code != 200:
+        print(
+            f"[scraper] {url} returned HTTP {r.status_code} — treating as no content",
+            file=sys.stderr,
+        )
+        return ""
+    return r.text
 
 
 def _extract_grants_from_html(html: str, source: str, source_url: str) -> list[Grant]:
@@ -205,11 +219,22 @@ def fetch_scraped_sources() -> list[Grant]:
         source = target["source"]
         url = target["url"]
         html = _html_scrape(url)
-        if not html:
-            html = _html_scrape(target.get("fallback_url", url))
-        extracted = _extract_grants_from_html(html, source, url)
+        source_url = url
+        fallback_url = target.get("fallback_url")
+        if not html and fallback_url and fallback_url != url:
+            html = _html_scrape(fallback_url)
+            if html:
+                # Link the grant to the page that actually served content.
+                source_url = fallback_url
+        extracted = _extract_grants_from_html(html, source, source_url)
         grants.extend(extracted)
-        print(f"[scraper] {source}: {len(extracted)} candidate(s) found")
+        if extracted:
+            print(f"[scraper] {source}: {len(extracted)} candidate(s) found")
+        else:
+            print(
+                f"[scraper] {source}: 0 candidate(s) — source unreachable or empty",
+                file=sys.stderr,
+            )
     return grants
 
 
