@@ -75,27 +75,90 @@ def score_grants(grants: list[Grant]) -> list[ScoredGrant]:
             raw = re.sub(r"^```[a-z]*\n?", "", raw)
             raw = re.sub(r"\n?```$", "", raw)
         scored_data = json.loads(raw)
+        score_map = _parse_scores(scored_data)
     except Exception as exc:
         print(f"[scorer] Claude API call failed: {exc}", file=sys.stderr)
         return _placeholder_scores(grants)
 
-    score_map: dict[int, dict] = {item["index"]: item for item in scored_data}
+    if not score_map:
+        print(
+            "[scorer] No usable scores in the Claude response — every grant "
+            "falls back to a neutral score",
+            file=sys.stderr,
+        )
+
     results: list[ScoredGrant] = []
     for i, g in enumerate(grants):
         item = score_map.get(i, {})
+        score = _coerce_int(item.get("fit_score"))
+        summary = item.get("qualification_summary")
         results.append(
             ScoredGrant(
                 grant=g,
-                fit_score=int(item.get("fit_score", 5)),
-                qualification_summary=item.get(
-                    "qualification_summary",
-                    "Score unavailable — manual review recommended.",
+                # The rubric is 1-10; the model is not bound by it, so clamp.
+                fit_score=5 if score is None else max(1, min(10, score)),
+                qualification_summary=(
+                    summary
+                    if isinstance(summary, str) and summary.strip()
+                    else "Score unavailable — manual review recommended."
                 ),
             )
         )
 
     results.sort(key=lambda s: s.fit_score, reverse=True)
     return results
+
+
+def _coerce_int(value) -> int | None:
+    """Model output is untyped JSON: accept 7, "7" and 7.0, reject "high"."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _parse_scores(payload) -> dict[int, dict]:
+    """Map {grant index: score item} from a response of unverified shape.
+
+    Called inside the try/except above so a malformed payload reaches the
+    placeholder fallback instead of crashing the run after the API was billed.
+    Individual unusable entries are dropped with a note on stderr rather than
+    raised: the caller already defaults a missing index to a neutral score, so
+    one bad entry costs one grant its score instead of the whole report.
+    """
+    if isinstance(payload, dict):
+        # "Return ONLY a JSON array" is an instruction, not a guarantee; a
+        # single wrapping key ({"grants": [...]}) is the usual deviation.
+        payload = next((v for v in payload.values() if isinstance(v, list)), None)
+    if not isinstance(payload, list):
+        print(
+            f"[scorer] Expected a JSON array of scores, got "
+            f"{type(payload).__name__}",
+            file=sys.stderr,
+        )
+        return {}
+
+    score_map: dict[int, dict] = {}
+    dropped = 0
+    for item in payload:
+        index = _coerce_int(item.get("index")) if isinstance(item, dict) else None
+        if index is None:
+            dropped += 1
+            continue
+        score_map[index] = item
+    if dropped:
+        print(
+            f"[scorer] Dropped {dropped} score entr{'y' if dropped == 1 else 'ies'} "
+            f"with a missing or non-numeric index",
+            file=sys.stderr,
+        )
+    return score_map
 
 
 def _placeholder_scores(grants: list[Grant]) -> list[ScoredGrant]:
