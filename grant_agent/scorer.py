@@ -114,7 +114,10 @@ def _coerce_int(value) -> int | None:
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, (int, float)):
-        return int(value)
+        try:
+            return int(value)
+        except (ValueError, OverflowError):  # NaN and Infinity survive json.loads
+            return None
     if isinstance(value, str):
         try:
             return int(value.strip())

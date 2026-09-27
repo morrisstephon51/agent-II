@@ -151,6 +151,33 @@ class ScorerParseTests(unittest.TestCase):
         self.assertEqual(by_title["Grant 0"].qualification_summary,
                          PLACEHOLDER_SUMMARY)
 
+    def test_non_finite_number_is_dropped_like_any_other_bad_value(self):
+        """json.loads accepts NaN and Infinity, and int() of either raises."""
+        by_title = score('[{"index": NaN, "fit_score": 1, '
+                         '"qualification_summary": "x"}, '
+                         '{"index": 1, "fit_score": 6, '
+                         '"qualification_summary": "kept"}]')
+        self.assertEqual(by_title["Grant 0"].fit_score, NEUTRAL_SCORE)
+        self.assertEqual(by_title["Grant 1"].fit_score, 6,
+                         "one non-finite value must not cost the other grants")
+
+    def test_a_parse_failure_falls_back_instead_of_propagating(self):
+        """Pins the placement, not the parser.
+
+        Every use of the model's output has to sit inside the try/except that
+        owns _placeholder_scores. _parse_scores handles the shapes known today;
+        the next unforeseen one must degrade the report, not kill the run after
+        the API call has already been billed.
+        """
+        payload = json.dumps([{"index": 0, "fit_score": 9,
+                               "qualification_summary": "strong fit"}])
+        with mock.patch.object(scorer, "_parse_scores",
+                               side_effect=RuntimeError("unforeseen shape")):
+            by_title = score(payload)
+        self.assertEqual(by_title["Grant 0"].fit_score, NEUTRAL_SCORE)
+        self.assertIn(NO_API_KEY_MARKER.split()[0],
+                      by_title["Grant 0"].qualification_summary)
+
     def test_unparseable_json_still_uses_placeholder_scores(self):
         """The pre-existing fallback must survive the change."""
         by_title = score("not json at all")
