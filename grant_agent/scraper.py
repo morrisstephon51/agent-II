@@ -230,7 +230,11 @@ def fetch_all() -> list[Grant]:
     seen: set[str] = set()
     unique: list[Grant] = []
     for g in all_grants:
-        key = g.url.rstrip("/").lower()
+        # A grant with no URL (some Granted-API rows omit url/link/source_url)
+        # still has a real deadline/award. Dedupe it on a source+title fallback
+        # instead of dropping it on an empty key, so it still reaches scoring,
+        # the report, and the deadline alert.
+        key = g.url.rstrip("/").lower() or f"{g.source}|{g.title}".strip().lower()
         if key and key not in seen:
             seen.add(key)
             unique.append(g)
