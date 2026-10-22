@@ -46,12 +46,12 @@ def check_and_alert(scored_grants: list[ScoredGrant], report_path: Path) -> None
     urgent = [sg for sg in scored_grants if sg.is_urgent(ALERT_DAYS)]
 
     if not urgent:
-        print("[alerts] No grants within 30-day deadline window.")
+        print(f"[alerts] No grants within {ALERT_DAYS}-day deadline window.")
         return
 
     # ── Stdout alert ────────────────────────────────────────────────────────
     print("\n" + "=" * 60)
-    print("⚠️  DEADLINE ALERT — Grants due within 30 days")
+    print(f"⚠️  DEADLINE ALERT — Grants due within {ALERT_DAYS} days")
     print("=" * 60)
     for sg in sorted(urgent, key=lambda s: s.grant.deadline):
         days_left = sg.grant.days_until_deadline()
@@ -68,11 +68,11 @@ def check_and_alert(scored_grants: list[ScoredGrant], report_path: Path) -> None
         print("[alerts] ALERT_EMAIL not set — skipping email notification.")
         return
 
-    subject = f"⚠️ Grant Deadline Alert — {len(urgent)} grant(s) due within 30 days [{date.today()}]"
+    subject = f"⚠️ Grant Deadline Alert — {len(urgent)} grant(s) due within {ALERT_DAYS} days [{date.today()}]"
 
     body_lines = [
         f"Grant Deadline Alert — {date.today()}",
-        f"The following {len(urgent)} grant(s) have deadlines within the next 30 days:\n",
+        f"The following {len(urgent)} grant(s) have deadlines within the next {ALERT_DAYS} days:\n",
     ]
     for sg in sorted(urgent, key=lambda s: s.grant.deadline):
         days_left = sg.grant.days_until_deadline()
