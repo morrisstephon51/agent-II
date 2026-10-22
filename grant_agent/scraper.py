@@ -20,7 +20,10 @@ _HEADERS = {
 }
 
 _DATE_PATTERNS = [
-    "%Y-%m-%d", "%m/%d/%Y", "%B %d, %Y", "%b %d, %Y", "%d %B %Y",
+    "%Y-%m-%d", "%m/%d/%Y",
+    "%B %d, %Y", "%b %d, %Y",   # "January 5, 2026" / "Jan 5, 2026"
+    "%B %d %Y", "%b %d %Y",     # comma-less: "January 5 2026" / "Jan 5 2026"
+    "%d %B %Y",                 # "5 January 2026"
 ]
 
 
