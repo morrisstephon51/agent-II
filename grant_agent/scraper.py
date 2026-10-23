@@ -45,7 +45,12 @@ def _parse_date(raw: str) -> Optional[date]:
 def _parse_amount(raw) -> Optional[int]:
     if not raw:
         return None
-    digits = re.sub(r"[^\d]", "", str(raw))
+    # Drop any cents/fraction before stripping punctuation. Otherwise removing the
+    # decimal point merges the fractional digits into the dollar figure: the string
+    # "$50,000.00" would read as 5000000 (100x) and a JSON float 50000.0 as 500000
+    # (10x). Keep only the integer part, then strip currency symbols and separators.
+    integer_part = str(raw).split(".", 1)[0]
+    digits = re.sub(r"[^\d]", "", integer_part)
     return int(digits) if digits else None
 
 
