@@ -165,7 +165,7 @@ def _extract_grants_from_html(html: str, source: str, source_url: str) -> list[G
 
     # Deadline extraction
     deadline_match = re.search(
-        r"(?:deadline|due|close[sd]?|apply by)[:\s]+([A-Za-z]+\s+\d{1,2},?\s+\d{4}|\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{4})",
+        r"(?:deadline|due|closes?|apply by)[:\s]+([A-Za-z]+\s+\d{1,2},?\s+\d{4}|\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{4})",
         text, re.IGNORECASE,
     )
     deadline = _parse_date(deadline_match.group(1)) if deadline_match else None
