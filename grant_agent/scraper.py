@@ -170,20 +170,41 @@ def _extract_grants_from_html(html: str, source: str, source_url: str) -> list[G
     )
     deadline = _parse_date(deadline_match.group(1)) if deadline_match else None
 
-    # Amount extraction
+    # Amount extraction. An explicit "$X to $Y" award range must map X -> award_min
+    # and Y -> award_max. The old single re.search grabbed only the FIRST dollar
+    # figure and stored it in award_max, so a "$50,000 to $250,000" grant kept the
+    # MINIMUM in award_max (award_min stayed None) and award_range_str() reported
+    # "Up to $50,000" to both the report and the Claude scorer prompt, understating
+    # the ceiling. Single-amount pages are unchanged (award_max only, award_min None).
+    _AMOUNT = r"\$([\d,]+(?:\.\d+)?)\s*(million|M\b|thousand|K\b)?"
+
+    def _money(num: str, suffix: Optional[str]) -> Optional[int]:
+        suffix = (suffix or "").lower()
+        mult = 1_000_000 if suffix in ("million", "m") else (1_000 if suffix in ("thousand", "k") else 1)
+        try:
+            return int(float(num.replace(",", "")) * mult)
+        except ValueError:
+            return None
+
+    award_min: Optional[int] = None
     award_max: Optional[int] = None
-    amount_match = re.search(
-        r"\$([\d,]+(?:\.\d+)?)\s*(million|M\b|thousand|K\b)?",
+    range_match = re.search(
+        _AMOUNT + r"\s*(?:to|through|and|[-–—])\s*" + _AMOUNT,
         text, re.IGNORECASE,
     )
-    if amount_match:
-        raw_val = amount_match.group(1).replace(",", "")
-        suffix = (amount_match.group(2) or "").lower()
-        multiplier = 1_000_000 if suffix in ("million", "m") else (1_000 if suffix in ("thousand", "k") else 1)
-        try:
-            award_max = int(float(raw_val) * multiplier)
-        except ValueError:
-            pass
+    if range_match:
+        bounds = [
+            v for v in (
+                _money(range_match.group(1), range_match.group(2)),
+                _money(range_match.group(3), range_match.group(4)),
+            ) if v is not None
+        ]
+        if bounds:
+            award_min, award_max = min(bounds), max(bounds)
+    else:
+        amount_match = re.search(_AMOUNT, text, re.IGNORECASE)
+        if amount_match:
+            award_max = _money(amount_match.group(1), amount_match.group(2))
 
     description = text[:600].strip()
 
@@ -193,6 +214,7 @@ def _extract_grants_from_html(html: str, source: str, source_url: str) -> list[G
         source=source,
         description=description,
         deadline=deadline,
+        award_min=award_min,
         award_max=award_max,
     )]
 
