@@ -4,7 +4,7 @@ from datetime import date
 from pathlib import Path
 from typing import List
 
-from .config import ALERT_DAYS, SCORE_BOLD_THRESHOLD
+from .config import ALERT_DAYS, MAX_GRANT_AGE_DAYS, SCORE_BOLD_THRESHOLD
 from .models import ScoredGrant
 
 REPORTS_DIR = Path(__file__).parent.parent / "reports"
@@ -68,7 +68,7 @@ def generate(scored_grants: list[ScoredGrant]) -> Path:
         lines.append("")
 
     lines.append("---")
-    lines.append(f"*Report generated {today}. Grants older than 90 days excluded.*")
+    lines.append(f"*Report generated {today}. Grants older than {MAX_GRANT_AGE_DAYS} days excluded.*")
 
     content = "\n".join(lines)
     path.write_text(content, encoding="utf-8")
