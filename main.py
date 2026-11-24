@@ -7,6 +7,7 @@ Usage:
   python main.py --dry-run    # scrape + score but don't save report or send email
 """
 import argparse
+import shlex
 import subprocess
 import sys
 import time
@@ -51,10 +52,28 @@ def run(dry_run: bool = False) -> None:
     print(f"\nDone in {elapsed:.1f}s  |  Report: {report_path}")
 
 
+def _cron_arg(value) -> str:
+    """Quote one path for a crontab command field.
+
+    cron hands the command to /bin/sh, so a path with a space must be
+    shell-quoted. cron also turns every unescaped % into a newline before
+    the shell sees it, so % has to be backslash-escaped on top of that.
+    """
+    return shlex.quote(str(value)).replace("%", "\\%")
+
+
+def build_cron_line(script: Path, python: str) -> str:
+    workdir = script.parent
+    log = workdir / "grant_agent.log"
+    return (
+        f"0 8 * * 1 cd {_cron_arg(workdir)} && {_cron_arg(python)} {_cron_arg(script)}"
+        f" >> {_cron_arg(log)} 2>&1"
+    )
+
+
 def install_cron() -> None:
     script = Path(__file__).resolve()
-    python = sys.executable
-    cron_line = f"0 8 * * 1 cd {script.parent} && {python} {script} >> {script.parent}/grant_agent.log 2>&1"
+    cron_line = build_cron_line(script, sys.executable)
 
     result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
     existing = result.stdout if result.returncode == 0 else ""
