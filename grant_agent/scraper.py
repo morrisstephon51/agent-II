@@ -49,6 +49,20 @@ def _parse_amount(raw) -> Optional[int]:
     return int(digits) if digits else None
 
 
+def _field(item: dict, *keys: str, default: str = "") -> str:
+    """First non-empty value among keys, as a string.
+
+    API rows often carry an explicit JSON null (key present, value None), so
+    item.get(key, "") returns None, not "". Slicing or .rstrip() on that None
+    raised inside the per-item loop and the except dropped the WHOLE batch.
+    """
+    for key in keys:
+        value = item.get(key)
+        if value:  # same falsy-skip as the old `or` chain; None never escapes
+            return str(value)
+    return default
+
+
 # ---------------------------------------------------------------------------
 # Granted public API (free, no key required)
 # ---------------------------------------------------------------------------
@@ -70,20 +84,16 @@ def _fetch_granted_query(query: str) -> list[Grant]:
         data = r.json()
         items = data if isinstance(data, list) else data.get("results", data.get("grants", []))
         for item in items:
-            deadline = _parse_date(
-                item.get("deadline") or item.get("close_date") or item.get("due_date", "")
-            )
+            deadline = _parse_date(_field(item, "deadline", "close_date", "due_date"))
             grants.append(
                 Grant(
-                    title=item.get("title") or item.get("name", "Unknown"),
-                    url=item.get("url") or item.get("link") or item.get("source_url", ""),
-                    source=item.get("funder") or item.get("agency") or query,
-                    description=(item.get("description") or item.get("summary", ""))[:800],
+                    title=_field(item, "title", "name", default="Unknown"),
+                    url=_field(item, "url", "link", "source_url"),
+                    source=_field(item, "funder", "agency", default=query),
+                    description=_field(item, "description", "summary")[:800],
                     deadline=deadline,
-                    award_min=_parse_amount(item.get("award_min") or item.get("min_amount", "")),
-                    award_max=_parse_amount(
-                        item.get("award_max") or item.get("max_amount") or item.get("amount", "")
-                    ),
+                    award_min=_parse_amount(_field(item, "award_min", "min_amount")),
+                    award_max=_parse_amount(_field(item, "award_max", "max_amount", "amount")),
                 )
             )
     except Exception as exc:
@@ -123,13 +133,13 @@ def fetch_nsf_sbir() -> list[Grant]:
         for item in items:
             grants.append(
                 Grant(
-                    title=item.get("solicitation_title") or item.get("title", "NSF SBIR"),
-                    url=item.get("solicitation_url") or item.get("url", "https://www.sbir.gov"),
+                    title=_field(item, "solicitation_title", "title", default="NSF SBIR"),
+                    url=_field(item, "solicitation_url", "url", default="https://www.sbir.gov"),
                     source="NSF SBIR",
-                    description=(item.get("program_description") or item.get("description", ""))[:800],
-                    deadline=_parse_date(item.get("close_date") or item.get("deadline", "")),
-                    award_min=_parse_amount(item.get("award_min", "")),
-                    award_max=_parse_amount(item.get("award_max") or item.get("award_amount", "")),
+                    description=_field(item, "program_description", "description")[:800],
+                    deadline=_parse_date(_field(item, "close_date", "deadline")),
+                    award_min=_parse_amount(_field(item, "award_min")),
+                    award_max=_parse_amount(_field(item, "award_max", "award_amount")),
                 )
             )
     except Exception as exc:
