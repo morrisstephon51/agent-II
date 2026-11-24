@@ -1,6 +1,9 @@
 """
 Claude API scorer using claude-sonnet-4-6.
-Sends all grants in one batched prompt with prompt caching on the system prompt.
+Scores grants in batches of SCORE_BATCH_SIZE, one request per batch, with prompt
+caching on the system prompt. One request for every grant does not fit: each grant
+costs ~100-150 output tokens, so past ~30 grants the JSON array is cut off at
+max_tokens, json.loads fails, and every grant falls back to a placeholder 5/10.
 """
 import json
 import re
@@ -35,6 +38,11 @@ Return ONLY a JSON array. Each element:
 """
 
 
+# fetch_all() can return ~84 grants (3 Granted queries x 20, 20 SBIR rows, 4 pages).
+# 10 grants x ~150 tokens stays well inside max_tokens=4096 for each request.
+SCORE_BATCH_SIZE = 10
+
+
 def score_grants(grants: list[Grant]) -> list[ScoredGrant]:
     if not grants:
         return []
@@ -45,6 +53,16 @@ def score_grants(grants: list[Grant]) -> list[ScoredGrant]:
 
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
+    # A failed batch falls back to placeholders for that batch only.
+    results: list[ScoredGrant] = []
+    for start in range(0, len(grants), SCORE_BATCH_SIZE):
+        results.extend(_score_batch(client, grants[start:start + SCORE_BATCH_SIZE]))
+
+    results.sort(key=lambda s: s.fit_score, reverse=True)
+    return results
+
+
+def _score_batch(client, grants: list[Grant]) -> list[ScoredGrant]:
     lines = []
     for i, g in enumerate(grants):
         lines.append(
